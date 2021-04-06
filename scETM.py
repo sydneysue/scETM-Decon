@@ -8,7 +8,6 @@ import logging
 from torch.distributions import Normal, Independent
 from scipy.sparse import csr_matrix
 from .BaseCellModel import BaseCellModel
-from .encode import Encode
 
 device=torch.device(
                      "cuda:0" if torch.cuda.is_available() else "cpu")
@@ -29,29 +28,27 @@ class scETM(BaseCellModel):
             self.library_size = adata.X.sum(1)
         else:
             self.library_size = adata.X.sum(1, keepdims=True) 
- 
-        
-        self.encoder = Encode(adata, args)
 
-        #self.q_delta = self.get_fully_connected_layers(
-            #n_input=self.n_genes + ((self.n_batches - 1) if self.input_batch_id else 0),
-            #hidden_sizes=args.hidden_sizes,
-            #args=args
-        #)
-        #hidden_dim = args.hidden_sizes[-1]
-        #self.mu_q_delta = nn.Linear(hidden_dim, self.n_topics, bias=True)
-        #self.logsigma_q_delta = nn.Linear(hidden_dim, self.n_topics, bias=True)
+
+        self.q_delta = self.get_fully_connected_layers(
+            n_input=self.n_genes + ((self.n_batches - 1) if self.input_batch_id else 0),
+            hidden_sizes=args.hidden_sizes,
+            args=args
+        )
+        hidden_dim = args.hidden_sizes[-1]
+        self.mu_q_delta = nn.Linear(hidden_dim, self.n_topics, bias=True)
+        self.logsigma_q_delta = nn.Linear(hidden_dim, self.n_topics, bias=True)
 
         self.supervised = args.max_supervised_weight > 0
-        if self.supervised:
-            self.cell_type_clf = self.get_fully_connected_layers(self.n_topics, self.n_labels, args)
+        #if self.supervised:
+            #self.cell_type_clf = self.get_fully_connected_layers(self.n_topics, self.n_labels, args)
 
         self.rho_fixed, self.rho = None, None
         if 'gene_emb' in adata.varm:
             rho_fixed = adata.varm['gene_emb'].T  # L x G
-            rho_fixed_std = rho_fixed.std(1, keepdims=True)
-            rho_fixed_std[rho_fixed_std == 0.] = 1
-            rho_fixed = (rho_fixed - rho_fixed.mean(1, keepdims=True)) / rho_fixed_std
+            #rho_fixed_std = rho_fixed.std(1, keepdims=True)
+            #rho_fixed_std[rho_fixed_std == 0.] = 1
+            #rho_fixed = (rho_fixed - rho_fixed.mean(1, keepdims=True)) / rho_fixed_std
             self.rho_fixed = torch.FloatTensor(rho_fixed).to(device=device)
             if self.trainable_gene_emb_dim:
                 self.rho = nn.Parameter(torch.randn(self.trainable_gene_emb_dim, self.n_genes))
@@ -105,18 +102,18 @@ class scETM(BaseCellModel):
         if self.input_batch_id:
             normed_cells = torch.cat((normed_cells, self._get_batch_indices_oh(data_dict)), dim=1)
         
-        q_delta, mu_q_delta = self.encoder.forward(normed_cells)
-        #mu_q_delta = self.mu_q_delta(q_delta)
+        q_delta = self.q_delta(normed_cells)
+        mu_q_delta = self.mu_q_delta(q_delta)
 
         if 'val' in hyper_param_dict:
             theta = F.softmax(mu_q_delta, dim=-1)
-            if self.supervised:
-                cell_type_logit = self.cell_type_clf(mu_q_delta)
-                return dict(theta=theta, delta=mu_q_delta, cell_type_logit=cell_type_logit)
-            else:
-                return dict(theta=theta, delta=mu_q_delta)
+            #if self.supervised:
+                #cell_type_logit = self.cell_type_clf(mu_q_delta)
+                #return dict(theta=theta, delta=mu_q_delta, cell_type_logit=cell_type_logit)
+            #else:
+            return dict(theta=theta, delta=mu_q_delta)
 
-        logsigma_q_delta = self.encoder.logsigma_q_delta(q_delta).clamp(self.min_logsigma, self.max_logsigma)
+        logsigma_q_delta = self.logsigma_q_delta(q_delta).clamp(self.min_logsigma, self.max_logsigma)
         q_delta = Independent(Normal(
             loc=mu_q_delta,
             scale=logsigma_q_delta.exp()
@@ -130,18 +127,22 @@ class scETM(BaseCellModel):
         beta = self.alpha @ rho
 
         decon = F.softmax(theta @ self.alpha, dim=-1)
-        logging.info(f'Decon shape: {decon.shape}')
+        #logging.info(f'Decon shape: {decon.shape}')
         decon_torch = torch.tensor(decon).to(device)
-        logging.info(f'Decon label shape: {decon_torch.shape}')
-        y = y
-        logging.info(f'y shape: {y.shape}')
-        y_label = np.argmax(y.values,axis=1)
-        y_torch = torch.tensor(y_label).to(device)
-        logging.info(f'y label shape: {y_torch.shape}')
+        #logging.info(f'Decon label shape: {decon_torch.shape}')
+        #y = y
+        #logging.info(f'y shape: {y.shape}')
+        #y_label = np.argmax(y.values,axis=1)
+        #y_torch = torch.tensor(y_label).to(device)
+        #logging.info(f'y label shape: {y_torch.shape}')
 
-        criterion = nn.CrossEntropyLoss()
-        added_loss = criterion(decon_torch, y_torch)
-        logging.info(f'Added_loss: {added_loss}')
+        #Weighted loss
+        #weights = [0 for i in range(self.n_labels)]
+        #for k, v in dict(Counter(data_dict['cell_type_indices'].numpy())).items():
+        #    weights[int(k)] = v
+        #weights = torch.tensor([1/(w) for w in weights]).to(device)
+
+        #criterion = F.cross_entropy(weights)
 
         if self.normalize_beta:
             recon = torch.mm(theta, F.softmax(beta, dim=-1)) + 1e-30
@@ -158,10 +159,13 @@ class scETM(BaseCellModel):
         loss = nll + hyper_param_dict['beta'] * kl_delta
         tracked_items = dict(loss=loss, nll=nll, kl_delta=kl_delta)
         if self.supervised:
-            cell_type_logit = self.cell_type_clf(delta)
-            cross_ent = F.cross_entropy(cell_type_logit, data_dict['cell_type_indices']).mean()
+            #cell_type_logit = self.cell_type_clf(delta)
+            cross_ent = F.cross_entropy(decon, data_dict['cell_type_indices']).mean()
+            #cross_ent = criterion(decon, data_dict['cell_type_indices']).mean()
+            #avg_loss = loss/len(normed_cells)
             loss += hyper_param_dict['supervised_weight'] * cross_ent
             tracked_items['cross_ent'] = cross_ent
+            #tracked_items['avg_loss'] = avg_loss
 
         tracked_items = {k: v.detach().item() for k, v in tracked_items.items()}
 
