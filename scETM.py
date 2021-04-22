@@ -46,9 +46,9 @@ class scETM(BaseCellModel):
         self.rho_fixed, self.rho = None, None
         if 'gene_emb' in adata.varm:
             rho_fixed = adata.varm['gene_emb'].T  # L x G
-            #rho_fixed_std = rho_fixed.std(1, keepdims=True)
-            #rho_fixed_std[rho_fixed_std == 0.] = 1
-            #rho_fixed = (rho_fixed - rho_fixed.mean(1, keepdims=True)) / rho_fixed_std
+            rho_fixed_std = rho_fixed.std(1, keepdims=True)
+            rho_fixed_std[rho_fixed_std == 0.] = 1
+            rho_fixed = (rho_fixed - rho_fixed.mean(1, keepdims=True)) / rho_fixed_std
             self.rho_fixed = torch.FloatTensor(rho_fixed).to(device=device)
             if self.trainable_gene_emb_dim:
                 self.rho = nn.Parameter(torch.randn(self.trainable_gene_emb_dim, self.n_genes))
@@ -126,16 +126,8 @@ class scETM(BaseCellModel):
         rho = torch.cat(rhos, dim=0) if len(rhos) > 1 else rhos[0]
         beta = self.alpha @ rho
 
-        decon = F.softmax(theta @ self.alpha, dim=-1)
-        #logging.info(f'Decon shape: {decon.shape}')
-        decon_torch = torch.tensor(decon).to(device)
-        #logging.info(f'Decon label shape: {decon_torch.shape}')
-        #y = y
-        #logging.info(f'y shape: {y.shape}')
-        #y_label = np.argmax(y.values,axis=1)
-        #y_torch = torch.tensor(y_label).to(device)
-        #logging.info(f'y label shape: {y_torch.shape}')
-
+        decon = F.softmax(theta @ self.alpha, dim=-1) # Predicted cell types [batch_size, n_celltypes]
+        
         #Weighted loss
         #weights = [0 for i in range(self.n_labels)]
         #for k, v in dict(Counter(data_dict['cell_type_indices'].numpy())).items():
