@@ -126,7 +126,7 @@ class scETM(BaseCellModel):
         rho = torch.cat(rhos, dim=0) if len(rhos) > 1 else rhos[0]
         beta = self.alpha @ rho
 
-        decon = F.softmax(theta @ self.alpha, dim=-1) # Predicted cell types [batch_size, n_celltypes]
+        decon = F.softmax(delta @ self.alpha, dim=-1) # Predicted cell types [batch_size, n_celltypes]
         
         #Weighted loss
         #weights = [0 for i in range(self.n_labels)]
@@ -146,6 +146,8 @@ class scETM(BaseCellModel):
             if self.batch_scaling:
                 recon_logit += self.gene_bias[data_dict['batch_indices']]
             nll = (-F.log_softmax(recon_logit, dim=-1) * self.mask_gene_expression(normed_cells if self.normed_loss else cells)).sum(-1).mean() + added_loss
+            nll = nll / self.n_genes
+            nll = nll * len(cells)
 
         kl_delta = self.get_kl(mu_q_delta, logsigma_q_delta).mean()
         loss = nll + hyper_param_dict['beta'] * kl_delta
@@ -153,6 +155,8 @@ class scETM(BaseCellModel):
         if self.supervised:
             #cell_type_logit = self.cell_type_clf(delta)
             cross_ent = F.cross_entropy(decon, data_dict['cell_type_indices']).mean()
+            cross_ent = cross_ent / self.n_celltypes
+            cross_ent = cross_ent * len(cells)
             #cross_ent = criterion(decon, data_dict['cell_type_indices']).mean()
             #avg_loss = loss/len(normed_cells)
             loss += hyper_param_dict['supervised_weight'] * cross_ent
