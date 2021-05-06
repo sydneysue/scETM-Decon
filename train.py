@@ -27,6 +27,13 @@ from model import scETM
 
 def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
           device=torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')):
+    
+    train_loss_list = []
+    test_loss_list = []
+
+    train_accuracy_list = []
+    test_accuracy_list = []
+    
     # sampler
     if args.n_samplers == 1 or args.batch_size >= adata.n_obs:
         sampler = CellSampler(adata, args)
@@ -35,17 +42,17 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
     sampler.start()
         
     # set up initial learning rate and optimizer
-    #step = epoch * steps_per_epoch
-    #args.lr = args.lr * (np.exp(-args.lr_decay) ** step)
-    #optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    #if args.restore_epoch:
-        #optimizer.load_state_dict(torch.load(os.path.join(
-            #args.ckpt_dir, f'opt-{args.restore_epoch}')))
-        #logging.debug('Optimizer restored.')
+    step = epoch * steps_per_epoch
+    args.lr = args.lr * (np.exp(-args.lr_decay) ** step)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    if args.restore_epoch:
+        optimizer.load_state_dict(torch.load(os.path.join(
+            args.ckpt_dir, f'opt-{args.restore_epoch}')))
+        logging.debug('Optimizer restored.')
 
     tracked_items = defaultdict(list)
 
-    #next_ckpt_epoch = int(np.ceil(epoch / args.log_every) * args.log_every)
+    next_ckpt_epoch = int(np.ceil(epoch / args.log_every) * args.log_every)
 
     #while epoch < args.n_epochs:
     print(f'Training: Epoch {int(epoch):5d}/{args.n_epochs:5d}\tNext ckpt: {next_ckpt_epoch:7d}', end='\r')
@@ -78,54 +85,102 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
     for key, val in new_tracked_items.items():
         tracked_items[key].append(val)
     
-    #step += 1
+    step += 1
     if args.lr_decay:
         args.lr = args.lr * np.exp(-args.lr_decay)
         for param_group in optimizer.param_groups:
             param_group['lr'] = args.lr
-    #epoch = step / steps_per_epoch
+    epoch = step / steps_per_epoch
         
         # eval
-        #if epoch >= next_ckpt_epoch or epoch >= args.n_epochs:
-            #logging.info('=' * 10 + f'Epoch {epoch:.0f}' + '=' * 10)
+        if epoch >= next_ckpt_epoch or epoch >= args.n_epochs:
+            logging.info('=' * 10 + f'Epoch {epoch:.0f}' + '=' * 10)
 
-            # log time and memory cost
-            #logging.info(repr(psutil.Process().memory_info()))
-            #if args.lr_decay:
-                #logging.info(f'lr: {args.lr}')
+            log time and memory cost
+            logging.info(repr(psutil.Process().memory_info()))
+            if args.lr_decay:
+                logging.info(f'lr: {args.lr}')
 
-            # log statistics of tracked items
-            #for key, val in tracked_items.items():
-                #logging.info(f'{key}: {np.mean(val):7.4f}')
-            #tracked_items = defaultdict(list)
+            log statistics of tracked items
+            for key, val in tracked_items.items():
+                logging.info(f'{key}: {np.mean(val):7.4f}')
+                if key == 'loss':
+                    train_loss_list.append(np.mean(val))
+                if key == 'accuracy':
+                    train_accuracy_list.append(np.mean(val))
+            tracked_items = defaultdict(list)
             
-            #if not args.no_eval:
+            if not args.no_eval:
+                test_tracked_items = evaluate(model, test_adata, args, next_ckpt_epoch)
+                #visualize(model, adata, args, next_ckpt_epoch, args.save_embeddings)
                 #evaluate(model, adata, args, next_ckpt_epoch, args.save_embeddings and epoch >= args.n_epochs)
 
-                # checkpointing
-                #torch.save(model.state_dict(), os.path.join(
-                    #args.ckpt_dir, f'model-{next_ckpt_epoch}'))
-                #torch.save(optimizer.state_dict(),
-                        #os.path.join(args.ckpt_dir, f'opt-{next_ckpt_epoch}'))
+                for key, val in test_tracked_items.items():
+                    logging.info(f'{key}: {np.mean(val):7.4f}')
+                    if key == 'test_loss':
+                        test_loss_list.append(val)
+                        #early_stopping(val[0], model)
 
-            #logging.info('=' * 10 + f'End of evaluation' + '=' * 10)
-            #next_ckpt_epoch += args.log_every
-         
-    #logging.info("Optimization Finished: %s" % args.ckpt_dir)
+                    if key == 'test_accuracy':
+                        test_accuracy_list.append(val)
+
+                if next_ckpt_epoch % 50 == 0 :
+                    visualize(model, adata, args, next_ckpt_epoch, args.save_embeddings)
+
+                # checkpointing
+                    torch.save(model.state_dict(), os.path.join(
+                        args.ckpt_dir, f'model-{next_ckpt_epoch}'))
+                    torch.save(optimizer.state_dict(),
+                        os.path.join(args.ckpt_dir, f'opt-{next_ckpt_epoch}'))
+
+            logging.info('=' * 10 + f'End of evaluation' + '=' * 10)
+            next_ckpt_epoch += args.log_every
+
+        if epoch >= args.n_epochs:
+            log_dict = dict(
+                train_loss = train_loss_list,
+                test_loss = test_loss_list,
+                train_accuracy = train_accuracy_list,
+                test_accuracy = test_accuracy_list
+            )
+
+            with open(os.path.join(args.ckpt_dir, 'loss.pkl'), 'wb') as f:
+                pickle.dump(log_dict, f)
+
+    logging.info("Optimization Finished: %s" % args.ckpt_dir)   
     sampler.join(0.1)
     
     return tracked_items
 
-def evaluate(model: scETM, test_adata: anndata.AnnData, args, epoch,
-             save_emb=False, device=torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')):
+def evaluate(model: scETM, adata: anndata.AnnData, args, epoch,
+             device=torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')):
     model.eval()
 
     # sampler
     #if args.n_samplers == 1 or args.batch_size >= test_adata.n_obs:
-    sampler = CellSampler(test_adata, args)
+    test_sampler = CellSampler(test_adata, args)
     #else:
-        #sampler = CellSamplerPool(args.n_samplers, test_adata, args)
-    sampler.start()
+        #test_sampler = CellSamplerPool(args.n_samplers, test_adata, args)
+    test_sampler.start()
+    test_cell_types = sorted(list(test_adata.obs.cell_types.unique()))
+    test_cell_type_indices = test_adata.obs.cell_types.apply(lambda x: test_cell_types.index(x))
+    test_cell_type_indices = torch.LongTensor(test_cell_type_indices)
+
+    batch_indices = torch.LongTensor(test_adata.obs.batch_indices.astype(int).values)
+
+    is_sparse = isinstance(test_adata.X, csr_matrix)
+    if is_sparse:
+        test_library_size = test_adata.X.sum(1)
+    else:
+        test_library_size = test_adata.X.sum(1, keepdims=True)
+
+    X = test_adata.X
+    n_cells = test_adata.n_obs
+    X = torch.FloatTensor(X.todense() if is_sparse else X)
+    test_library_size = torch.FloatTensor(test_library_size)
+    test_cell_indices = torch.arange(0, n_cells, dtype=torch.long)
+
+    test_data_dict = dict(cells=X, library_size=test_library_size, cell_indices=test_cell_indices, cell_type_indices=test_cell_type_indices, batch_indices=batch_indices)
 
     test_tracked_items = defaultdict(list)
 
@@ -136,52 +191,46 @@ def evaluate(model: scETM, test_adata: anndata.AnnData, args, epoch,
     }
 
     # construct data_dict
-    test_data_dict = {k: v.to(device) for k, v in sampler.pipeline.get_message().items()}
-    
+    test_data_dict = {k: v.to(device) for k, v in test_data_dict.items()}
+
     with torch.no_grad():
         decon, loss, fwd_dict, new_tracked_items = model(test_data_dict, test_hyper_param_dict)
-        
+
         new_tracked_items['test_loss'] = loss.cpu().numpy()
     # calculate accuracy
-        predicted = torch.argmax(decon, dim=1)
-        correct = (predicted == test_data_dict['cell_type_indices']).cpu().numpy().sum()
-        test_accuracy = 100 * (correct/len(predicted))
+        test_predicted = torch.argmax(decon, dim=1)
+        #print(f'Test predicted cell types are: {test_predicted}')
+        correct = (test_predicted == test_data_dict['cell_type_indices']).cpu().numpy().sum()
+        test_accuracy = 100 * (correct/len(test_predicted))
         new_tracked_items['test_accuracy'] = test_accuracy
 
-    # log tracked items
         for key, val in new_tracked_items.items():
             test_tracked_items[key].append(val)
-    
+
     return test_tracked_items
-        #next_ckpt_epoch = int(np.ceil(epoch / args.log_every) * args.log_every)
 
-        #if epoch >= next_ckpt_epoch or epoch >= args.n_epochs:
-            #logging.info('=' * 10 + f'Epoch_test {epoch:.0f}' + '=' * 10)
+def visualize(model: scETM, adata: anndata.AnnData, args, epoch,
+             save_emb=False, device=torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')):
+    model.eval()
 
-        # log statistics of tracked items
-            #for key, val in tracked_items.items():
-                #logging.info(f'{key}: {np.mean(val):7.4f}')
-            #tracked_items = defaultdict(list)
-
-    #embeddings = model.get_cell_emb_weights()
-    #for emb_name, emb in embeddings.items():
-        #adata.obsm[emb_name] = emb
-    #cluster_key = clustering('delta', adata, args)
+    embeddings = model.get_cell_emb_weights()
+    for emb_name, emb in embeddings.items():
+        adata.obsm[emb_name] = emb
+    cluster_key = clustering('delta', adata, args)
 
     # Only calc BE at last step
-    #if adata.obs.batch_indices.nunique() > 1 and not args.no_be and \
-            #((not args.eval and epoch == args.n_epochs) or (args.eval and epoch == args.restore_epoch)):
-        #for name, latent_space in embeddings.items():
-            #logging.info(f'{name}_BE: {entropy_batch_mixing(latent_space, adata.obs.batch_indices):7.4f}')
+    if adata.obs.batch_indices.nunique() > 1 and not args.no_be and \
+            ((not args.eval and epoch == args.n_epochs) or (args.eval and epoch == args.restore_epoch)):
+        for name, latent_space in embeddings.items():
+            logging.info(f'{name}_BE: {entropy_batch_mixing(latent_space, adata.obs.batch_indices):7.4f}')
 
     #if not args.no_draw:
         #color_by = [cluster_key] + args.color_by
         #for emb_name, emb in embeddings.items():
             #draw_embeddings(adata=adata, fname=f'{args.dataset_str}_{args.model}_{emb_name}_epoch{epoch}.pdf',
                 #args=args, color_by=color_by, use_rep=emb_name)
-    #if save_emb:
-        #save_embeddings(model, adata, embeddings, args)
-
+    if save_emb:
+        save_embeddings(model, adata, embeddings, args) #epoch
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -252,47 +301,10 @@ if __name__ == '__main__':
         args.n_warmup_epochs = epoch / 2
 
     # train or evaluate
-    #if args.eval:
-        #evaluate(model, adata, args, epoch, args.save_embeddings)
-    #else:
-    step = epoch * steps_per_epoch
-    
-    # set up optimizer initial learning rate and optimizer
-    args.lr = args.lr * (np.exp(-args.lr_decay) ** step)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    if args.restore_epoch:
-        optimizer.load_state_dict(torch.load(os.path.join(
-            args.ckpt_dir, f'opt-{args.restore_epoch}')))
-        logging.debug('Optimizer restored.')
-
-    next_ckpt_epoch = int(np.ceil(epoch / args.log_every) * args.log_every)
-
-    while epoch < args.n_epochs:
-        tracked_items = train(model, adata, args, epoch)
-        
-        step += 1
-        epoch = step / steps_per_epoch
-        
-        test_tracked_items = evaluate(model, test_adata, args, epoch, args.save_embeddings)
-
-        if epoch >= next_ckpt_epoch or epoch >= args.n_epochs:
-            logging.info('=' * 10 + f'Epoch {epoch:.0f}' + '=' * 10)
-
-            for key, val in tracked_items.items():
-                logging.info(f'{key}: {np.mean(val):7.4f}')
-            tracked_items = defaultdict(list)
-            
-            for key, val in test_tracked_items.items():
-                logging.info(f'{key}: {np.mean(val):7.4f}')
-            test_tracked_items = defaultdict(list)
-
-            torch.save(model.state_dict(), os.path.join(
-                args.ckpt_dir, f'model-{next_ckpt_epoch}'))
-            torch.save(optimizer.state_dict(),
-                    os.path.join(args.ckpt_dir, f'opt-{next_ckpt_epoch}'))
-
-            logging.info('=' * 10 + f'End of evaluation' + '=' * 10)
-            next_ckpt_epoch += args.log_every
-    
+    if args.eval:
+        evaluate(model, adata, args, epoch, args.save_embeddings)
+    else:
+        step = epoch * steps_per_epoch
+     
     duration = time.time() - start_time
     logging.info(f'Duration: {duration:.1f} s ({duration / 60:.1f} min)')
