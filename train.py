@@ -85,9 +85,11 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
     # log tracked items
         for key, val in new_tracked_items.items():
             tracked_items[key].append(val)
-    
+            
+    # delete tensors
         del decon, loss,fwd_dict, new_tracked_items
     
+    # add step
         step += 1
         if args.lr_decay:
             args.lr = args.lr * np.exp(-args.lr_decay)
