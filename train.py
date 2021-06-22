@@ -96,56 +96,56 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
         epoch = step / steps_per_epoch
         
         # eval
-            if epoch >= next_ckpt_epoch or epoch >= args.n_epochs:
-                logging.info('=' * 10 + f'Epoch {epoch:.0f}' + '=' * 10)
+        if epoch >= next_ckpt_epoch or epoch >= args.n_epochs:
+            logging.info('=' * 10 + f'Epoch {epoch:.0f}' + '=' * 10)
 
-                log time and memory cost
-                logging.info(repr(psutil.Process().memory_info()))
-                if args.lr_decay:
-                    logging.info(f'lr: {args.lr}')
+            log time and memory cost
+            logging.info(repr(psutil.Process().memory_info()))
+            if args.lr_decay:
+                logging.info(f'lr: {args.lr}')
 
-                log statistics of tracked items
-                for key, val in tracked_items.items():
-                    logging.info(f'{key}: {np.mean(val):7.4f}')
-                    if key == 'loss':
-                        train_loss_list.append(np.mean(val))
-                    if key == 'accuracy':
-                        train_accuracy_list.append(np.mean(val))
-                tracked_items = defaultdict(list)
+            log statistics of tracked items
+            for key, val in tracked_items.items():
+                logging.info(f'{key}: {np.mean(val):7.4f}')
+                if key == 'loss':
+                    train_loss_list.append(np.mean(val))
+                if key == 'accuracy':
+                    train_accuracy_list.append(np.mean(val))
+            tracked_items = defaultdict(list)
             
-                if not args.no_eval:
-                    test_tracked_items = evaluate(model, test_adata, args, next_ckpt_epoch)
+            if not args.no_eval:
+                test_tracked_items = evaluate(model, test_adata, args, next_ckpt_epoch)
                 #visualize(model, adata, args, next_ckpt_epoch, args.save_embeddings)
                 #evaluate(model, adata, args, next_ckpt_epoch, args.save_embeddings and epoch >= args.n_epochs)
 
-                    for key, val in test_tracked_items.items():
-                        logging.info(f'{key}: {np.mean(val):7.4f}')
-                        if key == 'test_loss':
-                            test_loss_list.append(val)
+                for key, val in test_tracked_items.items():
+                    logging.info(f'{key}: {np.mean(val):7.4f}')
+                    if key == 'test_loss':
+                        test_loss_list.append(val)
                         #early_stopping(val[0], model)
 
-                        if key == 'test_accuracy':
-                            test_accuracy_list.append(val)
+                    if key == 'test_accuracy':
+                        test_accuracy_list.append(val)
 
-                logging.info('=' * 10 + f'End of evaluation' + '=' * 10)
-                next_ckpt_epoch += args.log_every
+            logging.info('=' * 10 + f'End of evaluation' + '=' * 10)
+            next_ckpt_epoch += args.log_every
 
-            if epoch >= args.n_epochs:
-                log_dict = dict(
-                    train_loss = train_loss_list,
-                    train_accuracy = train_accuracy_list
-                )
-                if args.test_set:
-                    log_dict['test_loss'] = test_loss_list
-                    log_dict['test_accuracy'] = test_accuracy_list
+        if epoch >= args.n_epochs:
+            log_dict = dict(
+                train_loss = train_loss_list,
+                train_accuracy = train_accuracy_list
+            )
+            if args.test_set:
+                log_dict['test_loss'] = test_loss_list
+                log_dict['test_accuracy'] = test_accuracy_list
 
-                with open(os.path.join(args.ckpt_dir, 'loss.pkl'), 'wb') as f:
-                    pickle.dump(log_dict, f)
+            with open(os.path.join(args.ckpt_dir, 'loss.pkl'), 'wb') as f:
+                pickle.dump(log_dict, f)
 
-                torch.save(model.state_dict(), os.path.join(
-                    args.ckpt_dir, f'model-{epoch}'))
-                torch.save(optimizer.state_dict(),
-                    os.path.join(args.ckpt_dir, f'opt-{epoch}'))
+            torch.save(model.state_dict(), os.path.join(
+                args.ckpt_dir, f'model-{epoch}'))
+            torch.save(optimizer.state_dict(),
+                os.path.join(args.ckpt_dir, f'opt-{epoch}'))
 
     logging.info("Optimization Finished: %s" % args.ckpt_dir)   
     sampler.join(0.1)
