@@ -54,98 +54,98 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
 
     next_ckpt_epoch = int(np.ceil(epoch / args.log_every) * args.log_every)
 
-    #while epoch < args.n_epochs:
-    print(f'Training: Epoch {int(epoch):5d}/{args.n_epochs:5d}\tNext ckpt: {next_ckpt_epoch:7d}', end='\r')
+    while epoch < args.n_epochs:
+        print(f'Training: Epoch {int(epoch):5d}/{args.n_epochs:5d}\tNext ckpt: {next_ckpt_epoch:7d}', end='\r')
 
     # construct hyper_param_dict
-    hyper_param_dict = {
-        'beta': get_kl_weight(args, epoch),
-        'supervised_weight': args.max_supervised_weight
-    }
+        hyper_param_dict = {
+            'beta': get_kl_weight(args, epoch),
+            'supervised_weight': args.max_supervised_weight
+        }
 
     # construct data_dict
-    data_dict = {k: v.to(device) for k, v in sampler.pipeline.get_message().items()}
+        data_dict = {k: v.to(device) for k, v in sampler.pipeline.get_message().items()}
 
     # train for one step
-    model.train()
-    optimizer.zero_grad()
-    decon, loss, fwd_dict, new_tracked_items = model(data_dict, hyper_param_dict)
-    loss.backward()
+        model.train()
+        optimizer.zero_grad()
+        decon, loss, fwd_dict, new_tracked_items = model(data_dict, hyper_param_dict)
+        loss.backward()
     #norms = torch.nn.utils.clip_grad_norm_(model.parameters(), 500)
     #new_tracked_items['max_norm'] = norms.cpu().numpy()
-    optimizer.step()
+        optimizer.step()
         
     # calculate accuracy
-    p = F.softmax(decon.detach(), dim=1)
-    predicted = torch.argmax(p.cpu().detach(), dim=1)
-    correct = (predicted == data_dict['cell_type_indices'].cpu().detach()).numpy().sum()
-    accuracy = round(100 * (correct/len(predicted)),3)
-    new_tracked_items['accuracy'] = accuracy
+        p = F.softmax(decon.detach(), dim=1)
+        predicted = torch.argmax(p.cpu().detach(), dim=1)
+        correct = (predicted == data_dict['cell_type_indices'].cpu().detach()).numpy().sum()
+        accuracy = round(100 * (correct/len(predicted)),3)
+        new_tracked_items['accuracy'] = accuracy
  
     # log tracked items
-    for key, val in new_tracked_items.items():
-        tracked_items[key].append(val)
+        for key, val in new_tracked_items.items():
+            tracked_items[key].append(val)
     
-    del decon, loss,fwd_dict, new_tracked_items
+        del decon, loss,fwd_dict, new_tracked_items
     
-    step += 1
-    if args.lr_decay:
-        args.lr = args.lr * np.exp(-args.lr_decay)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = args.lr
-    epoch = step / steps_per_epoch
+        step += 1
+        if args.lr_decay:
+            args.lr = args.lr * np.exp(-args.lr_decay)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = args.lr
+        epoch = step / steps_per_epoch
         
         # eval
-        if epoch >= next_ckpt_epoch or epoch >= args.n_epochs:
-            logging.info('=' * 10 + f'Epoch {epoch:.0f}' + '=' * 10)
+            if epoch >= next_ckpt_epoch or epoch >= args.n_epochs:
+                logging.info('=' * 10 + f'Epoch {epoch:.0f}' + '=' * 10)
 
-            log time and memory cost
-            logging.info(repr(psutil.Process().memory_info()))
-            if args.lr_decay:
-                logging.info(f'lr: {args.lr}')
+                log time and memory cost
+                logging.info(repr(psutil.Process().memory_info()))
+                if args.lr_decay:
+                    logging.info(f'lr: {args.lr}')
 
-            log statistics of tracked items
-            for key, val in tracked_items.items():
-                logging.info(f'{key}: {np.mean(val):7.4f}')
-                if key == 'loss':
-                    train_loss_list.append(np.mean(val))
-                if key == 'accuracy':
-                    train_accuracy_list.append(np.mean(val))
-            tracked_items = defaultdict(list)
+                log statistics of tracked items
+                for key, val in tracked_items.items():
+                    logging.info(f'{key}: {np.mean(val):7.4f}')
+                    if key == 'loss':
+                        train_loss_list.append(np.mean(val))
+                    if key == 'accuracy':
+                        train_accuracy_list.append(np.mean(val))
+                tracked_items = defaultdict(list)
             
-            if not args.no_eval:
-                test_tracked_items = evaluate(model, test_adata, args, next_ckpt_epoch)
+                if not args.no_eval:
+                    test_tracked_items = evaluate(model, test_adata, args, next_ckpt_epoch)
                 #visualize(model, adata, args, next_ckpt_epoch, args.save_embeddings)
                 #evaluate(model, adata, args, next_ckpt_epoch, args.save_embeddings and epoch >= args.n_epochs)
 
-                for key, val in test_tracked_items.items():
-                    logging.info(f'{key}: {np.mean(val):7.4f}')
-                    if key == 'test_loss':
-                        test_loss_list.append(val)
+                    for key, val in test_tracked_items.items():
+                        logging.info(f'{key}: {np.mean(val):7.4f}')
+                        if key == 'test_loss':
+                            test_loss_list.append(val)
                         #early_stopping(val[0], model)
 
-                    if key == 'test_accuracy':
-                        test_accuracy_list.append(val)
+                        if key == 'test_accuracy':
+                            test_accuracy_list.append(val)
 
-            logging.info('=' * 10 + f'End of evaluation' + '=' * 10)
-            next_ckpt_epoch += args.log_every
+                logging.info('=' * 10 + f'End of evaluation' + '=' * 10)
+                next_ckpt_epoch += args.log_every
 
-        if epoch >= args.n_epochs:
-            log_dict = dict(
-                train_loss = train_loss_list,
-                train_accuracy = train_accuracy_list
-            )
-            if args.test_set:
-                log_dict['test_loss'] = test_loss_list
-                log_dict['test_accuracy'] = test_accuracy_list
+            if epoch >= args.n_epochs:
+                log_dict = dict(
+                    train_loss = train_loss_list,
+                    train_accuracy = train_accuracy_list
+                )
+                if args.test_set:
+                    log_dict['test_loss'] = test_loss_list
+                    log_dict['test_accuracy'] = test_accuracy_list
 
-            with open(os.path.join(args.ckpt_dir, 'loss.pkl'), 'wb') as f:
-                pickle.dump(log_dict, f)
+                with open(os.path.join(args.ckpt_dir, 'loss.pkl'), 'wb') as f:
+                    pickle.dump(log_dict, f)
 
-            torch.save(model.state_dict(), os.path.join(
-                args.ckpt_dir, f'model-{epoch}'))
-            torch.save(optimizer.state_dict(),
-                os.path.join(args.ckpt_dir, f'opt-{epoch}'))
+                torch.save(model.state_dict(), os.path.join(
+                    args.ckpt_dir, f'model-{epoch}'))
+                torch.save(optimizer.state_dict(),
+                    os.path.join(args.ckpt_dir, f'opt-{epoch}'))
 
     logging.info("Optimization Finished: %s" % args.ckpt_dir)   
     sampler.join(0.1)
