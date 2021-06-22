@@ -71,14 +71,15 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
     optimizer.zero_grad()
     decon, loss, fwd_dict, new_tracked_items = model(data_dict, hyper_param_dict)
     loss.backward()
-    norms = torch.nn.utils.clip_grad_norm_(model.parameters(), 500)
-    new_tracked_items['max_norm'] = norms.cpu().numpy()
+    #norms = torch.nn.utils.clip_grad_norm_(model.parameters(), 500)
+    #new_tracked_items['max_norm'] = norms.cpu().numpy()
     optimizer.step()
         
     # calculate accuracy
-    predicted = torch.argmax(decon, dim=1)
-    correct = (predicted == data_dict['cell_type_indices']).cpu().numpy().sum()
-    accuracy = 100 * (correct/len(predicted))
+    p = F.softmax(decon.detach(), dim=1)
+    predicted = torch.argmax(p.cpu().detach(), dim=1)
+    correct = (predicted == data_dict['cell_type_indices'].cpu().detach()).numpy().sum()
+    accuracy = round(100 * (correct/len(predicted)),3)
     new_tracked_items['accuracy'] = accuracy
  
     # log tracked items
@@ -124,28 +125,25 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
                     if key == 'test_accuracy':
                         test_accuracy_list.append(val)
 
-                if next_ckpt_epoch % 50 == 0 :
-                    visualize(model, adata, args, next_ckpt_epoch, args.save_embeddings)
-
-                # checkpointing
-                    torch.save(model.state_dict(), os.path.join(
-                        args.ckpt_dir, f'model-{next_ckpt_epoch}'))
-                    torch.save(optimizer.state_dict(),
-                        os.path.join(args.ckpt_dir, f'opt-{next_ckpt_epoch}'))
-
             logging.info('=' * 10 + f'End of evaluation' + '=' * 10)
             next_ckpt_epoch += args.log_every
 
         if epoch >= args.n_epochs:
             log_dict = dict(
                 train_loss = train_loss_list,
-                test_loss = test_loss_list,
-                train_accuracy = train_accuracy_list,
-                test_accuracy = test_accuracy_list
+                train_accuracy = train_accuracy_list
             )
+            if args.test_set:
+                log_dict['test_loss'] = test_loss_list
+                log_dict['test_accuracy'] = test_accuracy_list
 
             with open(os.path.join(args.ckpt_dir, 'loss.pkl'), 'wb') as f:
                 pickle.dump(log_dict, f)
+
+            torch.save(model.state_dict(), os.path.join(
+                args.ckpt_dir, f'model-{epoch}'))
+            torch.save(optimizer.state_dict(),
+                os.path.join(args.ckpt_dir, f'opt-{epoch}'))
 
     logging.info("Optimization Finished: %s" % args.ckpt_dir)   
     sampler.join(0.1)
@@ -154,33 +152,9 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
 
 def evaluate(model: scETM, adata: anndata.AnnData, args, epoch,
              device=torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')):
-    model.eval()
-
-    # sampler
-    #if args.n_samplers == 1 or args.batch_size >= test_adata.n_obs:
-    test_sampler = CellSampler(test_adata, args)
-    #else:
-        #test_sampler = CellSamplerPool(args.n_samplers, test_adata, args)
-    test_sampler.start()
-    test_cell_types = sorted(list(test_adata.obs.cell_types.unique()))
-    test_cell_type_indices = test_adata.obs.cell_types.apply(lambda x: test_cell_types.index(x))
-    test_cell_type_indices = torch.LongTensor(test_cell_type_indices)
-
-    batch_indices = torch.LongTensor(test_adata.obs.batch_indices.astype(int).values)
-
-    is_sparse = isinstance(test_adata.X, csr_matrix)
-    if is_sparse:
-        test_library_size = test_adata.X.sum(1)
-    else:
-        test_library_size = test_adata.X.sum(1, keepdims=True)
-
-    X = test_adata.X
-    n_cells = test_adata.n_obs
-    X = torch.FloatTensor(X.todense() if is_sparse else X)
-    test_library_size = torch.FloatTensor(test_library_size)
-    test_cell_indices = torch.arange(0, n_cells, dtype=torch.long)
-
-    test_data_dict = dict(cells=X, library_size=test_library_size, cell_indices=test_cell_indices, cell_type_indices=test_cell_type_indices, batch_indices=batch_indices)
+    
+    with torch.no_grad():
+        model.eval()
 
     test_tracked_items = defaultdict(list)
 
@@ -190,18 +164,16 @@ def evaluate(model: scETM, adata: anndata.AnnData, args, epoch,
         'supervised_weight': args.max_supervised_weight
     }
 
-    # construct data_dict
-    test_data_dict = {k: v.to(device) for k, v in test_data_dict.items()}
-
     with torch.no_grad():
         decon, loss, fwd_dict, new_tracked_items = model(test_data_dict, test_hyper_param_dict)
 
-        new_tracked_items['test_loss'] = loss.cpu().numpy()
+        new_tracked_items['test_loss'] = loss.cpu()
+   
     # calculate accuracy
-        test_predicted = torch.argmax(decon, dim=1)
-        #print(f'Test predicted cell types are: {test_predicted}')
-        correct = (test_predicted == test_data_dict['cell_type_indices']).cpu().numpy().sum()
-        test_accuracy = 100 * (correct/len(test_predicted))
+        test_p = F.softmax(decon, dim=1)
+        test_predicted = torch.argmax(test_p, dim=1)
+        correct = (test_predicted == test_data_dict['cell_type_indices']).cpu().detach().numpy().sum()
+        test_accuracy = round(100 * (correct/len(test_predicted)),2)
         new_tracked_items['test_accuracy'] = test_accuracy
 
         for key, val in new_tracked_items.items():
@@ -219,18 +191,18 @@ def visualize(model: scETM, adata: anndata.AnnData, args, epoch,
     cluster_key = clustering('delta', adata, args)
 
     # Only calc BE at last step
-    if adata.obs.batch_indices.nunique() > 1 and not args.no_be and \
-            ((not args.eval and epoch == args.n_epochs) or (args.eval and epoch == args.restore_epoch)):
-        for name, latent_space in embeddings.items():
-            logging.info(f'{name}_BE: {entropy_batch_mixing(latent_space, adata.obs.batch_indices):7.4f}')
+    #if adata.obs.batch_indices.nunique() > 1 and not args.no_be and \
+            #((not args.eval and epoch == args.n_epochs) or (args.eval and epoch == args.restore_epoch)):
+        #for name, latent_space in embeddings.items():
+            #logging.info(f'{name}_BE: {entropy_batch_mixing(latent_space, adata.obs.batch_indices):7.4f}')
 
     #if not args.no_draw:
         #color_by = [cluster_key] + args.color_by
         #for emb_name, emb in embeddings.items():
             #draw_embeddings(adata=adata, fname=f'{args.dataset_str}_{args.model}_{emb_name}_epoch{epoch}.pdf',
                 #args=args, color_by=color_by, use_rep=emb_name)
-    if save_emb:
-        save_embeddings(model, adata, embeddings, args) #epoch
+    #if save_emb:
+        #save_embeddings(model, adata, embeddings, args) #epoch
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -277,10 +249,32 @@ if __name__ == '__main__':
     # process dataset
     adata = process_dataset(adata, args)
 
-    test_adata = anndata.read_h5ad('/home/mcb/users/ssue1/DECON/data/pp_lognorm/pancreas_test_6celltypes.h5ad')
-    test_adata = process_dataset(test_adata, args)
-    logging.info(f'test_adata: {test_adata}')
+    if args.test_set:
+        test_adata = anndata.read_h5ad(args.test_path)
+        test_adata = process_dataset(test_adata, args)
+    
+        test_cell_types = sorted(list(test_adata.obs.cell_types.unique()))
+        test_cell_type_indices = test_adata.obs.cell_types.apply(lambda x: test_cell_types.index(x))
+        test_cell_type_indices = torch.LongTensor(test_cell_type_indices)
 
+        batch_indices = torch.LongTensor(test_adata.obs.batch_indices.astype(int).values)
+
+        is_sparse = isinstance(test_adata.X, csr_matrix)
+        if is_sparse:
+            test_library_size = test_adata.X.sum(1)
+        else:
+            test_library_size = test_adata.X.sum(1, keepdims=True)
+
+        X = test_adata.X
+        n_cells = test_adata.n_obs
+        X = torch.FloatTensor(X.todense() if is_sparse else X)
+        test_library_size = torch.FloatTensor(test_library_size)
+        test_cell_indices = torch.arange(0, n_cells, dtype=torch.long)
+    
+        test_data_dict = dict(cells=X, library_size=test_library_size, cell_indices=test_cell_indices, cell_type_indices=test_cell_type_indices, batch_indices=batch_indices)
+        device=torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
+        test_data_dict = {k: v.to(device) for k, v in test_data_dict.items()}
+    
     logging.info(repr(psutil.Process().memory_info()))
 
     start_time = time.time()
