@@ -86,6 +86,8 @@ def train(model: torch.nn.Module, adata: anndata.AnnData, args, epoch=0,
     for key, val in new_tracked_items.items():
         tracked_items[key].append(val)
     
+    del decon, loss,fwd_dict, new_tracked_items
+    
     step += 1
     if args.lr_decay:
         args.lr = args.lr * np.exp(-args.lr_decay)
@@ -178,6 +180,11 @@ def evaluate(model: scETM, adata: anndata.AnnData, args, epoch,
 
         for key, val in new_tracked_items.items():
             test_tracked_items[key].append(val)
+            
+        del decon, loss,fwd_dict, new_tracked_items
+        
+        if epoch >= args.n_epochs:
+            visualize(model, test_adata, args)
 
     return test_tracked_items
 
