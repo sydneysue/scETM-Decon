@@ -126,15 +126,7 @@ class scETM(BaseCellModel):
         rho = torch.cat(rhos, dim=0) if len(rhos) > 1 else rhos[0]
         beta = self.alpha @ rho
 
-        decon = F.softmax(delta @ self.alpha, dim=-1) # Predicted cell types [batch_size, n_celltypes]
-        
-        #Weighted loss
-        #weights = [0 for i in range(self.n_labels)]
-        #for k, v in dict(Counter(data_dict['cell_type_indices'].numpy())).items():
-        #    weights[int(k)] = v
-        #weights = torch.tensor([1/(w) for w in weights]).to(device)
-
-        #criterion = F.cross_entropy(weights)
+        decon = delta @ self.alpha # Predicted cell types [batch_size, n_celltypes]
 
         if self.normalize_beta:
             recon = torch.mm(theta, F.softmax(beta, dim=-1)) + 1e-30
@@ -161,7 +153,6 @@ class scETM(BaseCellModel):
             #avg_loss = loss/len(normed_cells)
             loss += hyper_param_dict['supervised_weight'] * cross_ent
             tracked_items['cross_ent'] = cross_ent
-            #tracked_items['avg_loss'] = avg_loss
 
         tracked_items = {k: v.detach().item() for k, v in tracked_items.items()}
 
