@@ -88,7 +88,7 @@ with torch.no_grad():
     decon = theta @ model.alpha
     print(f'Alpha: {model.alpha}')
     p = F.softmax(decon, dim=1)
-    print(f'Deconvolution proportions: {p}')
+    print(f'Deconvolved proportions: {p}')
 
     new_dict = dict(
             alpha = model.alpha.detach().cpu().numpy(),
