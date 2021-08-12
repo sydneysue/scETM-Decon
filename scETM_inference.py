@@ -39,32 +39,64 @@ args.ckpt_dir = os.path.join(args.ckpt_dir, train_instance_name)
 if not os.path.exists(args.ckpt_dir):
     os.makedirs(args.ckpt_dir)
 
+device=torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
+
 #Load dataset
 adata = ad.read_h5ad(args.h5ad_path)
 print('Bulk adata has shape (n_obs x n_vars)', adata.shape)
 adata = process_dataset(adata, args)
 
-#Load rho matrix to get intersection of genes
-# mat = pd.read_csv(args.cellsig_genes, index_col=0)
-# genes = sorted(list(set(mat.index).intersection(adata.var_names)))
-# adata = adata[:, genes]
-# print('After filtering out genes based on rho, bulk adata has shape (n_obs x n_vars) ', adata.shape)
-
+if args.parameters:
+    with open(args.parameters_path, 'rb') as f:
+        best_parameters = pickle.load(f)
+        logging.info(f'Best Parameters: {best_parameters}')
 
 #Load model
-model = scETM(adata, args)
+model = scETM(adata, args, best_parameters.parameters)
 if torch.cuda.is_available():
     model = model.to(torch.device('cuda:0'))
-    
+
 state_dict = torch.load(args.model_path)
 del state_dict['gene_bias']
-    
+del state_dict['global_bias']
+#for k in list(state_dict.keys()):
+#    if k.startswith('cell_type_clf'):
+#        del state_dict[k]
+
 model.load_state_dict(state_dict)
 
-model.eval()
+is_sparse = isinstance(adata.X, csr_matrix)
+if is_sparse:
+    library_size = adata.X.sum(1)
+else:
+    library_size = adata.X.sum(1, keepdims=True)
 
-embeddings = model.get_cell_emb_weights()
-for emb_name, emb in embeddings.items():
-    adata.obsm[emb_name] = emb
+cells  = adata.X
+cells = torch.FloatTensor(cells.todense() if is_sparse else cells)
+library_size = torch.FloatTensor(library_size)
 
-save_embeddings(model, adata, embeddings, args)
+normed_cells = cells / library_size if args.norm_cells else cells
+normed_cells = normed_cells.to(device)
+
+with torch.no_grad():
+    model.eval()
+
+    q_delta = model.q_delta(normed_cells)
+    mu_q_delta = model.mu_q_delta(q_delta)
+    theta = F.softmax(mu_q_delta, dim=-1)
+    print(f'Theta: {theta}')
+    decon = theta @ model.alpha
+    print(f'Alpha: {model.alpha}')
+    p = F.softmax(decon, dim=1)
+    print(f'Deconvolution proportions: {p}')
+
+    new_dict = dict(
+            alpha = model.alpha.detach().cpu().numpy(),
+            theta = theta)
+    import pickle
+    with open(os.path.join(args.ckpt_dir, 'new_embeddings.pkl'), 'wb') as f:
+        pickle.dump(new_dict, f)
+    embeddings = model.get_cell_emb_weights(adata)
+    for emb_name, emb in embeddings.items():
+        adata.obsm[emb_name] = emb
+    save_embeddings(model, adata, embeddings, args)
